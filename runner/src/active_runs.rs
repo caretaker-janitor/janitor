@@ -28,25 +28,25 @@ const DEFAULT_KEY: &str = "runner:active-runs";
 /// Shared Redis-backed store of currently-active runs, keyed by `log_id`.
 #[derive(Clone)]
 pub struct ActiveRunStore {
-    redis: redis::Client,
+    redis: janitor::redis::RedisManager,
     key: String,
 }
 
 impl ActiveRunStore {
     /// Construct a store backed by the given Redis client, using the
     /// default `runner:active-runs` hash key.
-    pub fn new(redis: redis::Client) -> Self {
+    pub fn new(redis: janitor::redis::RedisManager) -> Self {
         Self::with_key(redis, DEFAULT_KEY.to_string())
     }
 
     /// Construct a store with a custom hash key -- useful for tests so
     /// parallel test cases don't collide on a shared key.
-    pub fn with_key(redis: redis::Client, key: String) -> Self {
+    pub fn with_key(redis: janitor::redis::RedisManager, key: String) -> Self {
         Self { redis, key }
     }
 
-    async fn conn(&self) -> Option<redis::aio::MultiplexedConnection> {
-        match self.redis.get_multiplexed_async_connection().await {
+    async fn conn(&self) -> Option<redis::aio::ConnectionManager> {
+        match self.redis.get_connection_manager().await {
             Ok(c) => Some(c),
             Err(e) => {
                 log::warn!("active_runs: redis connect failed: {}", e);
@@ -261,7 +261,10 @@ mod tests {
         let mut conn = client.get_multiplexed_async_connection().await.ok()?;
         let _: String = redis::cmd("PING").query_async(&mut conn).await.ok()?;
         let key = format!("runner:active-runs:test:{}", uuid::Uuid::new_v4().simple());
-        Some(ActiveRunStore::with_key(client, key))
+        Some(ActiveRunStore::with_key(
+            janitor::redis::RedisManager::from_client(client),
+            key,
+        ))
     }
 
     /// Drop the test hash key so we don't leak state across runs.
@@ -282,6 +285,27 @@ mod tests {
         assert_eq!(got.log_id, "run-1");
         assert_eq!(got.worker_name, "worker-a");
         cleanup(&store).await;
+    }
+
+    #[tokio::test]
+    async fn conn_is_shared() {
+        let Some(store) = try_test_store().await else {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        };
+        let mut first = store.conn().await.unwrap();
+        let mut second = store.clone().conn().await.unwrap();
+        let first_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut first)
+            .await
+            .unwrap();
+        let second_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut second)
+            .await
+            .unwrap();
+        assert_eq!(first_id, second_id);
     }
 
     #[tokio::test]

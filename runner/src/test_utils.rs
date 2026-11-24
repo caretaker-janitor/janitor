@@ -225,7 +225,7 @@ fn assemble_app_state(
     let auth_service = Arc::new(WorkerAuthService::new(runner_db_arc.clone()));
 
     let active_runs = crate::active_runs::ActiveRunStore::with_key(
-        redis_client,
+        janitor::redis::RedisManager::from_client(redis_client),
         format!("runner:active-runs:test:{}", uuid::Uuid::new_v4().simple()),
     );
 

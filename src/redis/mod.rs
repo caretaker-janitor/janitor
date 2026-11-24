@@ -68,6 +68,18 @@ impl RedisManager {
         })
     }
 
+    /// Create a Redis manager around an existing client, with the default
+    /// timeouts and retries.
+    pub fn from_client(client: Client) -> Self {
+        Self {
+            config: Arc::new(RedisConfig::new(
+                client.get_connection_info().addr().to_string(),
+            )),
+            client: Arc::new(client),
+            connection: Arc::new(OnceCell::new()),
+        }
+    }
+
     /// Get the shared connection manager, connecting on first use
     pub async fn get_connection_manager(&self) -> Result<ConnectionManager, JanitorError> {
         let conn = self

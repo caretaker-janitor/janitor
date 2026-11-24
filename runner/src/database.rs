@@ -185,6 +185,7 @@ pub enum FinishOutcome {
 #[derive(Clone)]
 pub struct RunnerDatabase {
     shared_db: janitor::database::Database,
+    redis: Option<janitor::redis::RedisManager>,
 }
 
 impl RunnerDatabase {
@@ -192,12 +193,17 @@ impl RunnerDatabase {
     pub fn new(pool: PgPool) -> Self {
         Self {
             shared_db: janitor::database::Database::from_pool(pool),
+            redis: None,
         }
     }
 
     /// Create from a janitor Database instance.
     pub fn from_database(database: janitor::database::Database) -> Self {
         Self {
+            redis: database
+                .redis()
+                .cloned()
+                .map(janitor::redis::RedisManager::from_client),
             shared_db: database,
         }
     }
@@ -205,7 +211,8 @@ impl RunnerDatabase {
     /// Create a new database manager with Redis support.
     pub fn new_with_redis(pool: PgPool, redis: redis::Client) -> Self {
         Self {
-            shared_db: janitor::database::Database::from_pool_with_redis(pool, redis),
+            shared_db: janitor::database::Database::from_pool_with_redis(pool, redis.clone()),
+            redis: Some(janitor::redis::RedisManager::from_client(redis)),
         }
     }
 
@@ -214,17 +221,17 @@ impl RunnerDatabase {
         pool: PgPool,
         redis_url: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let shared_db = if let Some(url) = redis_url {
-            // Use shared RedisManager instead of direct Redis client
+        if let Some(url) = redis_url {
             let redis_config = janitor::redis::RedisConfig::new(url);
             let redis_manager = janitor::redis::RedisManager::new(redis_config)?;
             let redis_client = redis_manager.client().as_ref().clone();
-            janitor::database::Database::from_pool_with_redis(pool, redis_client)
+            Ok(Self {
+                shared_db: janitor::database::Database::from_pool_with_redis(pool, redis_client),
+                redis: Some(redis_manager),
+            })
         } else {
-            janitor::database::Database::from_pool(pool)
-        };
-
-        Ok(Self { shared_db })
+            Ok(Self::new(pool))
+        }
     }
 
     /// Perform a health check on the database connection.
@@ -243,6 +250,22 @@ impl RunnerDatabase {
     /// Get a reference to the Redis client if available.
     pub fn redis(&self) -> Option<&redis::Client> {
         self.shared_db.redis()
+    }
+
+    /// Get the Redis manager if available. Its connection is shared by
+    /// every clone of this database.
+    pub fn redis_manager(&self) -> Option<&janitor::redis::RedisManager> {
+        self.redis.as_ref()
+    }
+
+    /// The shared Redis connection, or `None` without Redis.
+    async fn redis_connection(
+        &self,
+    ) -> Result<Option<redis::aio::ConnectionManager>, janitor::error::JanitorError> {
+        match &self.redis {
+            Some(redis) => Ok(Some(redis.get_connection_manager().await?)),
+            None => Ok(None),
+        }
     }
 
     /// Convert a Run to JanitorResult with async database calls for related data.
@@ -938,8 +961,7 @@ INSERT INTO run (
         host: &str,
         retry_after: DateTime<Utc>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        if let Some(mut conn) = self.redis_connection().await? {
             let _: () = conn
                 .hset("rate-limit-hosts", host, retry_after.to_rfc3339())
                 .await?;
@@ -953,8 +975,7 @@ INSERT INTO run (
     ) -> Result<HashMap<String, DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = HashMap::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        if let Some(mut conn) = self.redis_connection().await? {
             let hosts: HashMap<String, String> = conn.hgetall("rate-limit-hosts").await?;
 
             let now = Utc::now();
@@ -977,8 +998,7 @@ INSERT INTO run (
     ) -> Result<Vec<i64>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = Vec::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        if let Some(mut conn) = self.redis_connection().await? {
             let items: Vec<String> = conn.hkeys("assigned-queue-items").await?;
 
             for item in items {
@@ -998,9 +1018,7 @@ INSERT INTO run (
         worker_name: &str,
         log_id: &RunId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
+        if let Some(mut conn) = self.redis_connection().await? {
             // Store assignment with worker info and timestamp
             let assignment_info = AssignmentInfo {
                 worker_name: worker_name.to_string(),
@@ -1046,8 +1064,7 @@ INSERT INTO run (
         channel: &str,
         payload: &serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        if let Some(mut conn) = self.redis_connection().await? {
             let body = serde_json::to_string(payload)?;
             let _: () = conn.publish(channel, body).await?;
         }
@@ -1059,9 +1076,7 @@ INSERT INTO run (
         &self,
         queue_id: i64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
+        if let Some(mut conn) = self.redis_connection().await? {
             if let Ok(assignment_info_str) = conn
                 .hget::<&str, String, String>("assigned-queue-items", queue_id.to_string())
                 .await
@@ -1224,18 +1239,16 @@ INSERT INTO run (
         // "relation 'active_run' does not exist"; removed.
 
         // Clean up old rate limit entries from Redis
-        if let Some(redis_client) = self.redis() {
-            if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-                let hosts: HashMap<String, String> =
-                    conn.hgetall("rate-limit-hosts").await.unwrap_or_default();
-                let now = Utc::now();
+        if let Ok(Some(mut conn)) = self.redis_connection().await {
+            let hosts: HashMap<String, String> =
+                conn.hgetall("rate-limit-hosts").await.unwrap_or_default();
+            let now = Utc::now();
 
-                for (host, time_str) in hosts.into_iter() {
-                    if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                        let retry_time = retry_time.with_timezone(&Utc);
-                        if retry_time <= now {
-                            let _: () = conn.hdel("rate-limit-hosts", &host).await.unwrap_or(());
-                        }
+            for (host, time_str) in hosts.into_iter() {
+                if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
+                    let retry_time = retry_time.with_timezone(&Utc);
+                    if retry_time <= now {
+                        let _: () = conn.hdel("rate-limit-hosts", &host).await.unwrap_or(());
                     }
                 }
             }
@@ -1697,8 +1710,7 @@ impl RunnerDatabase {
         &self,
         worker_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis) = self.redis() {
-            let mut conn = redis.get_multiplexed_async_connection().await?;
+        if let Some(mut conn) = self.redis_connection().await? {
             let key = format!("worker:last_seen:{}", worker_name);
             let timestamp = chrono::Utc::now().timestamp();
             let _: () = redis::cmd("SET")
@@ -1736,9 +1748,7 @@ impl RunnerDatabase {
     ) -> Result<HashMap<String, DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut last_seen_map = HashMap::new();
 
-        if let Some(redis) = self.redis() {
-            let mut conn = redis.get_multiplexed_async_connection().await?;
-
+        if let Some(mut conn) = self.redis_connection().await? {
             let keys: Vec<String> = redis::cmd("KEYS")
                 .arg("worker:last_seen:*")
                 .query_async(&mut conn)
@@ -1790,5 +1800,33 @@ impl RunnerDatabase {
         }
 
         Ok(failed_workers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn redis_connection_is_shared() {
+        crate::test_utils::ensure_redis().await;
+        let url = std::env::var("TEST_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let pool = PgPool::connect_lazy("postgresql://localhost:1/unused").unwrap();
+        let db = RunnerDatabase::new_with_redis(pool, redis::Client::open(url).unwrap());
+
+        let mut first = db.redis_connection().await.unwrap().unwrap();
+        let mut second = db.clone().redis_connection().await.unwrap().unwrap();
+        let first_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut first)
+            .await
+            .unwrap();
+        let second_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut second)
+            .await
+            .unwrap();
+        assert_eq!(first_id, second_id);
     }
 }

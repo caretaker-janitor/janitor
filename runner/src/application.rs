@@ -263,13 +263,13 @@ impl ApplicationBuilder {
         // survive runner restarts and so multiple runner replicas share
         // a single source of truth for in-flight runs (see
         // salsa.debian.org/janitor-team/janitor.debian.net#117).
-        let redis_client = database.redis().cloned().ok_or_else(|| {
+        let redis_manager = database.redis_manager().cloned().ok_or_else(|| {
             ApplicationError::Configuration(
                 "Redis is required for active-runs persistence; configure redis_location"
                     .to_string(),
             )
         })?;
-        let active_runs = crate::active_runs::ActiveRunStore::new(redis_client);
+        let active_runs = crate::active_runs::ActiveRunStore::new(redis_manager);
         let security_service = Arc::new(crate::auth::SecurityService::new(
             Arc::clone(&database),
             active_runs.clone(),
