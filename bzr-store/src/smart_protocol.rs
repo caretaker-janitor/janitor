@@ -154,7 +154,7 @@ fn chrooted_exchange(
         .map_err(|e| BzrError::Python(format!("detect_protocol_factory: {}", e)))?;
 
     let proto = factory
-        .build(&backing_transport, write_func, Some("/"), &jail)
+        .build(&backing_transport, write_func, None, &jail)
         .map_err(|e| BzrError::Python(format!("build smart protocol: {}", e)))?;
 
     proto

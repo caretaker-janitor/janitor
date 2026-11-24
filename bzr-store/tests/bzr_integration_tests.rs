@@ -225,3 +225,60 @@ test_with_database! {
         handle.abort();
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn test_push_and_branch_campaign_branch(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        let local_path = local.path().join("local");
+        let (_rev1, rev2) = build_two_commit_branch(&local_path);
+
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (admin_addr, admin_handle) = spawn(admin).await;
+        let (addr, handle) = spawn(public).await;
+
+        // The client blocks, so run it off the runtime that serves its requests.
+        let push_url: url::Url = format!("bzr+http://{}/foo/campaign", admin_addr)
+            .parse()
+            .unwrap();
+        let pushed_revision = tokio::task::spawn_blocking(move || {
+            // The same steps as the worker's push of a new branch.
+            let source = breezyshim::branch::open_as_generic(local_path.as_path()).unwrap();
+            let transport = breezyshim::transport::get_transport(&push_url, None).unwrap();
+            assert!(matches!(
+                breezyshim::controldir::open_from_transport(&transport, None),
+                Err(breezyshim::error::Error::NotBranchError(..))
+            ));
+            let target = breezyshim::controldir::create_on_transport(
+                &transport,
+                &source.controldir().cloning_metadir(),
+            )
+            .unwrap();
+            let branch = target.push_branch(&source, None, None, None, None).unwrap();
+            branch.last_revision().as_str().to_string()
+        })
+        .await
+        .unwrap();
+        assert_eq!(pushed_revision, rev2);
+
+        let url: url::Url = format!("bzr+http://{}/bzr/foo/campaign", addr)
+            .parse()
+            .unwrap();
+        let last_revision = tokio::task::spawn_blocking(move || {
+            let branch = breezyshim::branch::open_as_generic(&url).unwrap();
+            branch.last_revision().as_str().to_string()
+        })
+        .await
+        .unwrap();
+        assert_eq!(last_revision, rev2);
+
+        handle.abort();
+        admin_handle.abort();
+    }
+}
