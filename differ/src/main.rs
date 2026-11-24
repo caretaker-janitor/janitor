@@ -1182,8 +1182,9 @@ fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: 
     record_precache_started(trigger);
     let state = state.clone();
     state.clone().background_tasks.spawn(async move {
-        if let Err(e) = precache(&state, old_id, new_id).await {
-            info!("Error precaching diff: {e}");
+        if let Err(e) = precache(&state, old_id.clone(), new_id.clone()).await {
+            record_error("precache", e.reason());
+            error!("Error precaching diff of {old_id} and {new_id}: {e}");
         }
     });
 }
@@ -2213,6 +2214,37 @@ mod tests {
                     ),
                     (
                         "differ_requests_total{op=\"debdiff\"}".to_string(),
+                        Value::Counter(1)
+                    ),
+                ])
+            );
+        }
+
+        #[test]
+        fn failed_precache_is_counted() {
+            let cache = tempfile::TempDir::new().unwrap();
+            let art = tempfile::TempDir::new().unwrap();
+            let ((), snapshot) = capture_async(async {
+                let state = test_state(cache.path(), art.path());
+                spawn_precache(
+                    &state,
+                    RunId::new("old").unwrap(),
+                    RunId::new("new").unwrap(),
+                    "test",
+                );
+                state.background_tasks.close();
+                state.background_tasks.wait().await;
+            });
+            assert_eq!(
+                snapshot,
+                Snapshot::from([
+                    (
+                        "differ_errors_total{op=\"precache\",reason=\"artifacts-missing\"}"
+                            .to_string(),
+                        Value::Counter(1)
+                    ),
+                    (
+                        "differ_precache_started_total{trigger=\"test\"}".to_string(),
                         Value::Counter(1)
                     ),
                 ])
