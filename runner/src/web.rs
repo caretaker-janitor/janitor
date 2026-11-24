@@ -4351,9 +4351,18 @@ async fn assign_work_internal(
             apt_repository_key: dist
                 .filter(|d| base_apt_repository(d).is_some())
                 .and_then(|d| d.signed_by.clone()),
+            lintian: crate::api_types::LintianAssignment {
+                profile: dist.and_then(|d| d.lintian_profile.clone()),
+                suppress_tags: dist
+                    .map(|d| d.lintian_suppress_tag.clone())
+                    .unwrap_or_default(),
+            },
         };
 
-        ("debian", BuildAssignmentConfig::Debian(build_assignment))
+        (
+            "debian",
+            BuildAssignmentConfig::Debian(Box::new(build_assignment)),
+        )
     } else {
         (
             "generic",

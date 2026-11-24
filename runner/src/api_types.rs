@@ -778,6 +778,23 @@ pub struct DebianBuildAssignment {
         skip_serializing_if = "Option::is_none"
     )]
     pub apt_repository_key: Option<String>,
+    /// Lintian settings of the base distribution.
+    pub lintian: LintianAssignment,
+}
+
+/// Lintian settings in a Debian assignment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct LintianAssignment {
+    /// Lintian profile to check the build with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Tags to leave out of the lintian result.
+    #[serde(
+        rename = "suppress-tags",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub suppress_tags: Vec<String>,
 }
 
 /// Generic build configuration in an assignment.
@@ -793,7 +810,7 @@ pub struct GenericBuildAssignment {
 #[serde(untagged)]
 pub enum BuildAssignmentConfig {
     /// Configuration for the `debian` target.
-    Debian(DebianBuildAssignment),
+    Debian(Box<DebianBuildAssignment>),
     /// Configuration for the `generic` target.
     Generic(GenericBuildAssignment),
 }

@@ -2209,6 +2209,50 @@ campaign {
     assert_eq!(env["DEB_VENDOR"], "debian");
 }
 
+/// A Debian campaign's assignment carries the lintian settings of its
+/// base distribution.
+#[tokio::test]
+async fn assign_debian_build_carries_distribution_lintian() {
+    let config = janitor::config::read_string(
+        r#"
+distribution {
+  name: "unstable"
+  lintian_profile: "debian"
+  lintian_suppress_tag: "bad-distribution-in-changes-file"
+  lintian_suppress_tag: "no-nmu-in-changelog"
+}
+campaign {
+  name: "test-campaign"
+  command: "true"
+  debian_build {
+    base_distribution: "unstable"
+  }
+}
+"#,
+    )
+    .unwrap();
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign_config(config.campaign[0].clone())
+        .with_distribution(config.distribution[0].clone());
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "assign-debian-lintian-cb").await;
+    assert_eq!(
+        assignment["build"]["config"]["lintian"],
+        json!({
+            "profile": "debian",
+            "suppress-tags": ["bad-distribution-in-changes-file", "no-nmu-in-changelog"],
+        })
+    );
+}
+
 /// Like Python, `branch.url` is the URL of the main branch as opened,
 /// without a trailing slash.
 #[tokio::test]
