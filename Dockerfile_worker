@@ -59,6 +59,7 @@ RUN echo "root:1:65535" > /etc/subuid \
  && echo '$chroot_mode = "unshare";' >> /etc/sbuild/sbuild.conf
 
 COPY --from=build /code/target/release/janitor-worker /usr/local/bin/janitor-worker
+COPY --from=build /code/target/release/janitor-dist /usr/local/bin/janitor-dist
 
 COPY autopkgtest-wrapper /usr/local/bin/autopkgtest-wrapper
 
