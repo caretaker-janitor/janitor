@@ -429,6 +429,26 @@ impl Application {
             });
         }
 
+        // Upload the logs from the backup log directory once at startup too.
+        if let Some(backup_manager) = self.state.backup_log_manager.clone() {
+            let log_manager = self.state.log_manager.clone();
+            tokio::spawn(async move {
+                match janitor::logs::upload_backup_logs(
+                    backup_manager.as_ref(),
+                    log_manager.as_ref(),
+                )
+                .await
+                {
+                    Ok(done) => {
+                        log::info!("Uploaded {} backup logs", done.len());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to upload backup logs: {}", e);
+                    }
+                }
+            });
+        }
+
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {

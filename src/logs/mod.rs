@@ -264,6 +264,73 @@ pub async fn import_logs(
     join_all(import_futures).await
 }
 
+/// Move every log in `backup_log_manager` to `log_manager`, the way
+/// `upload_backup_artifacts` moves artifacts.
+///
+/// Returns the `(codebase, run_id, name)` of each log moved. A log that
+/// cannot be moved stays in the backup and is logged.
+pub async fn upload_backup_logs(
+    backup_log_manager: &LogFileManager,
+    log_manager: &LogFileManager,
+) -> Result<Vec<(String, String, String)>, Error> {
+    use futures::stream::TryStreamExt;
+
+    // Collect up front, since moving deletes from the store being listed.
+    let entries: Vec<(String, String, String)> =
+        backup_log_manager.iter_logs().try_collect().await?;
+
+    let mut done = vec![];
+    for (codebase, run_id, name) in entries {
+        match upload_backup_log(backup_log_manager, log_manager, &codebase, &run_id, &name).await {
+            Ok(()) => done.push((codebase, run_id, name)),
+            Err(e) => log::warn!(
+                "Unable to upload backup log {}/{}/{}: {}",
+                codebase,
+                run_id,
+                name,
+                e
+            ),
+        }
+    }
+    Ok(done)
+}
+
+async fn upload_backup_log(
+    backup_log_manager: &LogFileManager,
+    log_manager: &LogFileManager,
+    codebase: &str,
+    run_id: &str,
+    name: &str,
+) -> Result<(), Error> {
+    use futures::stream::TryStreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let codebase =
+        CodebaseName::new(codebase).map_err(|_| Error::InvalidName(codebase.to_string()))?;
+    let run_id = RunId::new(run_id).map_err(|_| Error::InvalidName(run_id.to_string()))?;
+    let name = LogFilename::new(name).map_err(|_| Error::InvalidName(name.to_string()))?;
+
+    let td = tempfile::tempdir()?;
+    let path = td.path().join(name.as_str());
+    let mut file = tokio::fs::File::create(&path).await?;
+    let mut stream = backup_log_manager
+        .get_log(&codebase, &run_id, &name)
+        .await?;
+    while let Some(chunk) = stream.try_next().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| Error::InvalidName(path.display().to_string()))?;
+    log_manager
+        .import_log(&codebase, &run_id, path, Some(&name))
+        .await?;
+    backup_log_manager
+        .delete_log(&codebase, &run_id, &name)
+        .await
+}
+
 /// Log entry structure for Python compatibility
 #[derive(Debug, Clone)]
 pub struct LogEntry {
@@ -299,6 +366,65 @@ pub async fn import_logs_from_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::TryStreamExt;
+
+    #[tokio::test]
+    async fn test_upload_backup_logs_moves_logs_and_clears_backup() {
+        let primary_dir = tempfile::tempdir().unwrap();
+        let primary = LogFileManager::local(primary_dir.path()).unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let backup = LogFileManager::local(backup_dir.path()).unwrap();
+        let codebase = CodebaseName::new("foo").unwrap();
+        let name = LogFilename::new("build.log").unwrap();
+
+        let src = tempfile::tempdir().unwrap();
+        for run in ["run-a", "run-b"] {
+            let path = src.path().join(run);
+            std::fs::write(&path, run.as_bytes()).unwrap();
+            backup
+                .import_log(
+                    &codebase,
+                    &RunId::new(run).unwrap(),
+                    path.to_str().unwrap(),
+                    Some(&name),
+                )
+                .await
+                .unwrap();
+        }
+
+        let mut done = upload_backup_logs(&backup, &primary).await.unwrap();
+        done.sort();
+        assert_eq!(
+            done,
+            vec![
+                (
+                    "foo".to_string(),
+                    "run-a".to_string(),
+                    "build.log".to_string()
+                ),
+                (
+                    "foo".to_string(),
+                    "run-b".to_string(),
+                    "build.log".to_string()
+                ),
+            ]
+        );
+
+        let left: Vec<(String, String, String)> = backup.iter_logs().try_collect().await.unwrap();
+        assert_eq!(left, vec![]);
+
+        for run in ["run-a", "run-b"] {
+            let content: Vec<u8> = primary
+                .get_log(&codebase, &RunId::new(run).unwrap(), &name)
+                .await
+                .unwrap()
+                .map_ok(|chunk| chunk.to_vec())
+                .try_concat()
+                .await
+                .unwrap();
+            assert_eq!(content, run.as_bytes());
+        }
+    }
 
     #[test]
     fn test_create_log_manager_s3() {
