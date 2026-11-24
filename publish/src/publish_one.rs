@@ -455,6 +455,21 @@ pub fn publish_one(
     Ok(result)
 }
 
+/// Add a run's codemod result to the description template variables: its
+/// keys at the top level and the whole result as `codemod`. A run without
+/// a result adds nothing.
+fn add_codemod_result(vs: &mut serde_json::Value, codemod_result: &serde_json::Value) {
+    if codemod_result.is_null() {
+        return;
+    }
+    if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object()) {
+        vs_obj.extend(codemod_obj.clone());
+    } else {
+        log::warn!("Failed to merge codemod_result: not an object");
+    }
+    vs["codemod"] = codemod_result.clone();
+}
+
 /// Publish changes from a source branch to a target branch for the
 /// given mode (propose, push, etc.), generating descriptions and commit
 /// messages from the campaign templates.
@@ -498,13 +513,7 @@ pub fn publish(
                 log::warn!("Failed to merge extra_context: not an object");
             }
         }
-        if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object())
-        {
-            vs_obj.extend(codemod_obj.clone());
-        } else {
-            log::warn!("Failed to merge codemod_result: not an object");
-        }
-        vs["codemod"] = codemod_result.clone();
+        add_codemod_result(&mut vs, codemod_result);
         if let Some(debdiff) = debdiff.as_ref() {
             match std::str::from_utf8(debdiff) {
                 Ok(debdiff_str) => {

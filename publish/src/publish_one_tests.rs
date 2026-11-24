@@ -44,3 +44,20 @@ fn test_drop_env_with_equals_in_arg() {
     drop_env(&mut args);
     assert_eq!(args, vec!["command", "--option=value"]);
 }
+
+#[test]
+fn test_add_codemod_result() {
+    let mut vs = serde_json::json!({"role": "main"});
+    add_codemod_result(&mut vs, &serde_json::json!({"applied": 3}));
+    assert_eq!(
+        vs,
+        serde_json::json!({"role": "main", "applied": 3, "codemod": {"applied": 3}})
+    );
+}
+
+#[test]
+fn test_add_codemod_result_without_result() {
+    let mut vs = serde_json::json!({"role": "main"});
+    add_codemod_result(&mut vs, &serde_json::Value::Null);
+    assert_eq!(vs, serde_json::json!({"role": "main"}));
+}
