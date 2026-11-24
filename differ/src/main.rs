@@ -1153,19 +1153,7 @@ struct PrecacheAllResponse {
     )
 )]
 async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Response> {
-    let rows = sqlx::query_as::<_, (RunId, RunId)>(
-        r#"SELECT run.id, unchanged_run.id
-           FROM run
-           INNER JOIN run AS unchanged_run
-             ON run.main_branch_revision = unchanged_run.revision
-           WHERE run.result_code = 'success'
-             AND unchanged_run.result_code = 'success'
-             AND run.main_branch_revision != run.revision
-             AND run.campaign NOT IN ('control', 'unchanged')
-           ORDER BY run.finish_time DESC, unchanged_run.finish_time DESC"#,
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = precache_all_pairs(&state.pool).await?;
 
     if rows.is_empty() {
         return Ok((StatusCode::OK, Json(PrecacheAllResponse { count: 0 })).into_response());
@@ -1176,6 +1164,31 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
         spawn_precache(&state, old_id, new_id, "precache-all");
     }
     Ok((StatusCode::ACCEPTED, Json(PrecacheAllResponse { count })).into_response())
+}
+
+/// Every successful changed run with the unchanged run its diff pages
+/// are served against (see `get_unchanged_run`), as `(new, old)` pairs.
+async fn precache_all_pairs(pool: &sqlx::PgPool) -> sqlx::Result<Vec<(RunId, RunId)>> {
+    sqlx::query_as::<_, (RunId, RunId)>(
+        r#"SELECT run.id, unchanged_run.id
+           FROM run
+           INNER JOIN LATERAL (
+             SELECT candidate.id
+             FROM run AS candidate
+             WHERE candidate.revision = run.main_branch_revision
+               AND candidate.codebase = run.codebase
+               AND candidate.result_code = 'success'
+               AND candidate.id = candidate.change_set
+             ORDER BY candidate.finish_time DESC
+             LIMIT 1
+           ) AS unchanged_run ON true
+           WHERE run.result_code = 'success'
+             AND run.main_branch_revision != run.revision
+             AND run.campaign NOT IN ('control', 'unchanged')
+           ORDER BY run.finish_time DESC"#,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: &'static str) {
@@ -1965,6 +1978,41 @@ mod tests {
             assert_eq!(
                 candidate_pairs(db.pool(), &msg).await.unwrap(),
                 vec![(run_id("control-run"), run_id("lint-run"))]
+            );
+        }
+    }
+
+    janitor::test_with_database! {
+        schema = Core;
+        async fn precache_all_pairs_use_the_served_unchanged_run(db: TestDatabase) {
+            sqlx::raw_sql(
+                "INSERT INTO codebase (name, branch_url, url, vcs_type) \
+                 VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', 'git'), \
+                        ('other', 'https://example.com/other', 'https://example.com/other', 'git'); \
+                 INSERT INTO change_set (id, campaign) \
+                 VALUES ('control-old', 'control'), ('control-run', 'control'), \
+                        ('lint-run', 'lintian-fixes'), ('other-run', 'lintian-fixes'), \
+                        ('cs', 'lintian-fixes'); \
+                 INSERT INTO run (id, codebase, campaign, change_set, result_code, revision, \
+                                  main_branch_revision, logfilenames, command, finish_time) \
+                 VALUES ('control-old', 'pkg', 'control', 'control-old', 'success', 'base-rev', \
+                         'base-rev', '{}', '', NOW() - INTERVAL '1 day'), \
+                        ('control-run', 'pkg', 'control', 'control-run', 'success', 'base-rev', \
+                         'base-rev', '{}', '', NOW()), \
+                        ('in-cs', 'pkg', 'lintian-fixes', 'cs', 'success', 'base-rev', \
+                         'older-rev', '{}', '', NOW()), \
+                        ('lint-run', 'pkg', 'lintian-fixes', 'lint-run', 'success', 'new-rev', \
+                         'base-rev', '{}', '', NOW()), \
+                        ('other-run', 'other', 'lintian-fixes', 'other-run', 'success', \
+                         'other-rev', 'base-rev', '{}', '', NOW())",
+            )
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+            assert_eq!(
+                precache_all_pairs(db.pool()).await.unwrap(),
+                vec![(run_id("lint-run"), run_id("control-run"))]
             );
         }
     }
