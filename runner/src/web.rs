@@ -1134,12 +1134,56 @@ fn cache_branch_name(
     let Some(debian_config) = &campaign_config.debian_build else {
         return Some("main".to_string());
     };
-    let vendor = config
-        .get_distribution(&debian_config.base_distribution)
-        .and_then(|d| d.vendor.clone());
+    let vendor = debian_vendor(config.get_distribution(&debian_config.base_distribution));
+    Some(format!("{}/latest", vendor?))
+}
+
+/// The Debian vendor of a distribution: its configured `vendor`, or
+/// the host's dpkg vendor.
+fn debian_vendor(distribution: Option<&janitor::config::Distribution>) -> Option<String> {
+    let vendor = distribution.and_then(|d| d.vendor.clone());
     #[cfg(feature = "debian")]
     let vendor = vendor.or_else(|| crate::dpkg_vendor().map(|v| v.to_lowercase()));
-    Some(format!("{}/latest", vendor?))
+    vendor
+}
+
+/// The distribution's archive as an apt source line without the
+/// `deb` prefix (`<mirror> <name> <components>`), or None unless it
+/// has both an archive mirror and components.
+fn base_apt_repository(distribution: &janitor::config::Distribution) -> Option<String> {
+    let mirror = distribution.archive_mirror_uri.as_deref()?;
+    if distribution.component.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} {} {}",
+        mirror,
+        distribution.name.as_deref()?,
+        distribution.component.join(" ")
+    ))
+}
+
+/// Build environment for a Debian campaign, taken from its base
+/// distribution.
+fn debian_build_env(
+    debian_config: &crate::builder::DebianBuildConfig,
+    distribution: Option<&janitor::config::Distribution>,
+) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if let Some(vendor) = debian_vendor(distribution) {
+        env.insert("DEB_VENDOR".to_string(), vendor);
+    }
+    if let Some(chroot) = debian_config
+        .chroot
+        .clone()
+        .or_else(|| distribution.and_then(|d| d.chroot.clone()))
+    {
+        env.insert("CHROOT".to_string(), chroot);
+    }
+    if let Some(apt_repository) = distribution.and_then(base_apt_repository) {
+        env.insert("APT_REPOSITORY".to_string(), apt_repository);
+    }
+    env
 }
 
 /// The cached branch URL and target repository URL handed to the
@@ -4238,7 +4282,12 @@ async fn assign_work_internal(
     // view.
     // Like Python, an empty `committer` counts as unset.
     let committer = state.config.committer.as_deref().filter(|c| !c.is_empty());
-    let mut env: BTreeMap<String, String> = crate::committer_env(committer).into_iter().collect();
+    let mut env: BTreeMap<String, String> = campaign_config
+        .debian_build
+        .as_ref()
+        .map(|dcfg| debian_build_env(dcfg, state.config.get_distribution(&dcfg.base_distribution)))
+        .unwrap_or_default();
+    env.extend(crate::committer_env(committer));
     env.extend(extra_env);
 
     // The worker's `DebianBuildConfig` reads these hyphen-cased keys,
@@ -4298,6 +4347,10 @@ async fn assign_work_internal(
                 })
                 .unwrap_or_default(),
             dep_server_url: state.public_dep_server_url.clone(),
+            apt_repository: dist.and_then(base_apt_repository),
+            apt_repository_key: dist
+                .filter(|d| base_apt_repository(d).is_some())
+                .and_then(|d| d.signed_by.clone()),
         };
 
         ("debian", BuildAssignmentConfig::Debian(build_assignment))
@@ -4779,7 +4832,7 @@ mod tests {
     use crate::CampaignConfig;
     use janitor_types::{Campaign, CodebaseName};
     use serde_json::json;
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
     fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
         match value {
@@ -4943,6 +4996,74 @@ distribution {
         assert_eq!(
             super::cache_branch_name(&debian, &config),
             Some("Debian/latest".to_string())
+        );
+    }
+
+    #[test]
+    fn test_debian_build_env() {
+        let config = janitor::config::read_string(
+            r#"
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.example.com/debian"
+  component: "main"
+  component: "contrib"
+  signed_by: "/usr/share/keyrings/example.gpg"
+  chroot: "unstable-amd64-sbuild"
+  vendor: "debian"
+}
+"#,
+        )
+        .unwrap();
+        let distribution = config.get_distribution("unstable");
+        let mut debian_config = crate::builder::DebianBuildConfig {
+            base_distribution: "unstable".to_string(),
+            build_distribution: None,
+            build_suffix: None,
+            build_command: None,
+            chroot: None,
+            extra_build_distribution: vec![],
+        };
+        assert_eq!(
+            super::debian_build_env(&debian_config, distribution),
+            BTreeMap::from([
+                (
+                    "APT_REPOSITORY".to_string(),
+                    "http://deb.example.com/debian unstable main contrib".to_string()
+                ),
+                ("CHROOT".to_string(), "unstable-amd64-sbuild".to_string()),
+                ("DEB_VENDOR".to_string(), "debian".to_string()),
+            ])
+        );
+        debian_config.chroot = Some("campaign-chroot".to_string());
+        assert_eq!(
+            super::debian_build_env(&debian_config, distribution)["CHROOT"],
+            "campaign-chroot"
+        );
+    }
+
+    #[test]
+    fn test_base_apt_repository_needs_mirror_and_components() {
+        let config = janitor::config::read_string(
+            r#"
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.example.com/debian"
+}
+distribution {
+  name: "stable"
+  component: "main"
+}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::base_apt_repository(config.get_distribution("unstable").unwrap()),
+            None
+        );
+        assert_eq!(
+            super::base_apt_repository(config.get_distribution("stable").unwrap()),
+            None
         );
     }
 

@@ -2153,6 +2153,62 @@ async fn assign_sends_campaign_skip_setup_validation() {
     assert_eq!(assignment["skip-setup-validation"], json!(true));
 }
 
+/// A Debian campaign's assignment carries the archive of its base
+/// distribution, in the build config and in the build environment.
+#[tokio::test]
+async fn assign_debian_build_carries_distribution_archive() {
+    let config = janitor::config::read_string(
+        r#"
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.example.com/debian"
+  component: "main"
+  signed_by: "/usr/share/keyrings/example.gpg"
+  chroot: "unstable-amd64-sbuild"
+  vendor: "debian"
+}
+campaign {
+  name: "test-campaign"
+  command: "true"
+  debian_build {
+    base_distribution: "unstable"
+  }
+}
+"#,
+    )
+    .unwrap();
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign_config(config.campaign[0].clone())
+        .with_distribution(config.distribution[0].clone());
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "assign-debian-archive-cb").await;
+    let build = &assignment["build"];
+    assert_eq!(build["target"], "debian");
+    assert_eq!(
+        build["config"]["base-apt-repository"],
+        "http://deb.example.com/debian unstable main"
+    );
+    assert_eq!(
+        build["config"]["base-apt-repository-signed-by"],
+        "/usr/share/keyrings/example.gpg"
+    );
+    let env = &build["environment"];
+    assert_eq!(
+        env["APT_REPOSITORY"],
+        "http://deb.example.com/debian unstable main"
+    );
+    assert_eq!(env["CHROOT"], "unstable-amd64-sbuild");
+    assert_eq!(env["DEB_VENDOR"], "debian");
+}
+
 /// Like Python, `branch.url` is the URL of the main branch as opened,
 /// without a trailing slash.
 #[tokio::test]

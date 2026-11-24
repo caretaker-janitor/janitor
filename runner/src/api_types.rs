@@ -765,6 +765,19 @@ pub struct DebianBuildAssignment {
     pub extra_repositories: Vec<String>,
     /// URL of the dependency server.
     pub dep_server_url: Option<String>,
+    /// The base distribution's archive, as an apt source line without
+    /// the `deb` prefix.
+    #[serde(
+        rename = "base-apt-repository",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub apt_repository: Option<String>,
+    /// Keyring that signs the base distribution's archive.
+    #[serde(
+        rename = "base-apt-repository-signed-by",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub apt_repository_key: Option<String>,
 }
 
 /// Generic build configuration in an assignment.

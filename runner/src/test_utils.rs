@@ -28,6 +28,7 @@ fn into_janitor_database(test_db: TestDatabase) -> Database {
 #[derive(Default)]
 pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
+    distributions: Vec<janitor::config::Distribution>,
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     redirect_artifact_downloads: Option<bool>,
@@ -55,6 +56,12 @@ impl TestConfigBuilder {
     /// Register an arbitrary campaign.
     pub fn with_campaign_config(mut self, campaign: janitor::config::Campaign) -> Self {
         self.campaigns.push(campaign);
+        self
+    }
+
+    /// Register a distribution.
+    pub fn with_distribution(mut self, distribution: janitor::config::Distribution) -> Self {
+        self.distributions.push(distribution);
         self
     }
 
@@ -117,6 +124,7 @@ impl TestConfigBuilder {
             config.committer = Some("Test Runner <test@example.com>".to_string());
         }
         config.campaign = self.campaigns;
+        config.distribution = self.distributions;
         config
     }
 }
