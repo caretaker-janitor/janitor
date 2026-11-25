@@ -175,7 +175,8 @@ pub(crate) async fn check_last_published(
     let row: Option<(Option<chrono::DateTime<chrono::Utc>>,)> =
         sqlx::query_as(sqlx::AssertSqlSafe(
             &*r###"
-SELECT timestamp from publish left join run on run.revision = publish.revision
+SELECT (publish.timestamp AT TIME ZONE 'UTC') AS timestamp
+FROM publish left join run on run.revision = publish.revision
 WHERE run.campaign = $1 and run.codebase = $2 AND publish.result_code = 'success'
 order by timestamp desc limit 1
 "###,
@@ -914,5 +915,43 @@ mod tests {
         assert!(q
             .candidates
             .contains(&"https://example.com/foo/bar".to_string()));
+    }
+
+    janitor::test_with_database! {
+        schema = Core;
+        async fn test_check_last_published(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            let campaign = Campaign::new("lintian-fixes").unwrap();
+            let codebase = CodebaseName::new("cb-1").unwrap();
+            for query in [
+                "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git')",
+                "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
+                "INSERT INTO run (
+                    id, codebase, campaign, command, start_time, finish_time, result_code,
+                    branch_url, change_set, logfilenames, vcs_type, revision
+                 ) VALUES
+                    ('run-1', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',
+                     'https://example.invalid/cb-1', 'cs-1', '{}', 'git', 'rev-1')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            assert_eq!(
+                check_last_published(pool, &campaign, &codebase).await.unwrap(),
+                None
+            );
+
+            sqlx::query(
+                "INSERT INTO publish (id, change_set, revision, mode, result_code, timestamp)
+                 VALUES ('pub-1', 'cs-1', 'rev-1', 'push', 'success', '2026-01-02 03:04:05')",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                check_last_published(pool, &campaign, &codebase).await.unwrap(),
+                Some("2026-01-02T03:04:05Z".parse().unwrap())
+            );
+        }
     }
 }
