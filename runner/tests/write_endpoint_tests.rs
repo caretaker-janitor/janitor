@@ -3013,6 +3013,86 @@ async fn get_workers_returns_summary_envelope_when_empty() {
     );
 }
 
+/// A worker that is running a job is listed as active, even when it
+/// has not been seen within the failure timeout, and the counts are
+/// those of the listed workers. The test database has no Redis, so
+/// no worker has been seen: on `/admin/workers` the others are
+/// failed, on `/workers` (which does not check) they are idle. An
+/// active run of a worker that is no longer registered is not counted.
+#[tokio::test]
+async fn workers_counts_busy_unseen_worker_as_active() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    for name in ["busy-worker", "quiet-worker"] {
+        sqlx::query(
+            "INSERT INTO worker (name, password) \
+             VALUES ($1, crypt('pw', gen_salt('bf')))",
+        )
+        .bind(name)
+        .execute(&pool)
+        .await
+        .expect("insert worker");
+    }
+    for (worker_name, log_id) in [("busy-worker", "run-busy"), ("gone-worker", "run-gone")] {
+        state
+            .active_runs
+            .store(ActiveRun {
+                worker_name: worker_name.to_string(),
+                worker_link: None,
+                queue_id: 1,
+                log_id: janitor_types::RunId::new(log_id).unwrap(),
+                start_time: Utc::now(),
+                finish_time: None,
+                estimated_duration: None,
+                campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
+                change_set: None,
+                command: "true".to_string(),
+                codebase: janitor_types::CodebaseName::new("workers-cb").unwrap(),
+                backchannel: Backchannel::None {},
+                vcs_info: VcsInfo::default(),
+                instigated_context: None,
+                resume_from: None,
+            })
+            .await;
+    }
+
+    for (uri, other_status) in [("/admin/workers", "failed"), ("/workers", "idle")] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = get_body(response).await;
+        let statuses: HashMap<&str, &str> = body["workers"]
+            .as_array()
+            .expect("workers array")
+            .iter()
+            .map(|w| (w["name"].as_str().unwrap(), w["status"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            statuses,
+            HashMap::from([("busy-worker", "active"), ("quiet-worker", other_status)])
+        );
+        let idle = u64::from(other_status == "idle");
+        assert_eq!(body["total_workers"], 2);
+        assert_eq!(body["active_workers"], 1);
+        assert_eq!(body["idle_workers"], idle);
+        assert_eq!(body["summary"]["total"], 2);
+        assert_eq!(body["summary"]["active"], 1);
+        assert_eq!(body["summary"]["idle"], idle);
+        if other_status == "failed" {
+            assert_eq!(body["summary"]["failed"], 1);
+        } else {
+            assert!(body["summary"]["failed"].is_null());
+        }
+    }
+}
+
 /// `GET /workers` returns `run_count` for each worker, counting rows
 /// in the `run` table attributed to it. Workers that have never
 /// executed a run must still appear with `run_count` set to zero.

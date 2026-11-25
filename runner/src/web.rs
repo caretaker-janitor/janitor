@@ -2211,10 +2211,10 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
     let worker_infos: Vec<WorkerInfo> = workers
         .iter()
         .map(|worker| {
-            let status = if failed_workers.contains(&worker.name) {
-                "failed"
-            } else if active_workers.contains(worker.name.as_str()) {
+            let status = if active_workers.contains(worker.name.as_str()) {
                 "active"
+            } else if failed_workers.contains(&worker.name) {
+                "failed"
             } else {
                 "idle"
             };
@@ -2238,10 +2238,11 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
         })
         .collect();
 
-    let active_count = active_workers.len();
-    let total_count = workers.len();
-    let failed_count = failed_workers.len();
-    let idle_count = total_count - active_count - failed_count;
+    let count_status = |status: &str| worker_infos.iter().filter(|w| w.status == status).count();
+    let total_count = worker_infos.len();
+    let active_count = count_status("active");
+    let failed_count = count_status("failed");
+    let idle_count = count_status("idle");
 
     Json(WorkerListResponse {
         error: None,
