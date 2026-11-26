@@ -71,6 +71,9 @@ stage. Both count the latest run of each current candidate. Tick "Include
 historical" to add codebases that are no longer candidates, and "Include
 transient" for transient failures.
 
+`/cupboard/c/<codebase>/` lists the runs of one codebase, newest first,
+with how long each took, above a chart of those durations.
+
 ## Review and publishing
 
 A QA reviewer approves or rejects a successful run on the run's page or

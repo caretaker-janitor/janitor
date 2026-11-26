@@ -536,7 +536,7 @@ async def generate_codebase(conn, codebase):
         codebase,
     )
     runs = await conn.fetch(
-        "SELECT id, campaign, finish_time, result_code, failure_transient "
+        "SELECT id, campaign, finish_time, duration, result_code, failure_transient "
         "FROM run WHERE codebase = $1 ORDER BY finish_time DESC",
         codebase,
     )

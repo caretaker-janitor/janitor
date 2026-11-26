@@ -59,10 +59,38 @@
             </tbody>
         </table>
         <h2>Runs</h2>
+        {% set timed_runs = runs | rejectattr("duration", "none") | list | reverse | list %}
+        {% if timed_runs %}
+            <div style="max-width: 600px; height: 300px;">
+                <canvas id="duration-chart"></canvas>
+            </div>
+            <script>
+                new Chart($("#duration-chart"), {
+                    type: 'line',
+                    data: {
+                        labels: [{% for run in timed_runs %}{{ format_timestamp(run.finish_time) | tojson }}, {% endfor %}],
+                        datasets: [{
+                            label: "Duration (minutes)",
+                            data: [{% for run in timed_runs %}{{ (run.duration.total_seconds() / 60) | round(1) }}, {% endfor %}],
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            title: {
+                                text: "Run duration",
+                                display: true
+                            },
+                        },
+                    },
+                });
+            </script>
+        {% endif %}
         <ul>
             {% for run in runs %}
                 <li>
-                    <a href="{{ url_for('cupboard-run', codebase=codebase.name, run_id=run.id) }}">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                    <a href="{{ url_for('cupboard-run', codebase=codebase.name, run_id=run.id) }}">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}{% if run.duration is not none %}, took {{ format_duration(run.duration) }}{% endif %}
                 </li>
             {% endfor %}
         </ul>
