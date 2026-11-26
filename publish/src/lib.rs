@@ -2647,6 +2647,7 @@ pub async fn publish_from_policy(
         Some(&publish_id),
         requester,
         Some(&run.id),
+        rate_limit_bucket,
     )
     .await?;
 
@@ -2861,6 +2862,7 @@ pub async fn publish_and_store(
                 Some(publish_id),
                 requester,
                 Some(&run.id),
+                rate_limit_bucket,
             )
             .await?;
 
@@ -2914,6 +2916,7 @@ pub async fn publish_and_store(
                 Some(publish_id),
                 requester,
                 Some(&run.id),
+                rate_limit_bucket,
             )
             .await?;
 
@@ -3896,6 +3899,7 @@ async fn check_existing_mp(
                     Some(&publish_id),
                     Some("publisher (regular refresh)"),
                     Some(&last_run.id),
+                    rate_limit_bucket.as_deref(),
                 )
                 .await
                 {
@@ -3990,6 +3994,7 @@ async fn check_existing_mp(
                     Some(&publish_id),
                     Some("publisher (regular refresh)"),
                     Some(&last_run.id),
+                    rate_limit_bucket.as_deref(),
                 )
                 .await
                 {

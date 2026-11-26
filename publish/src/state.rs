@@ -27,6 +27,7 @@ pub async fn store_publish(
     publish_id: Option<&PublishId>,
     requester: Option<&str>,
     run_id: Option<&RunId>,
+    rate_limit_bucket: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let mut tx = conn.begin().await?;
 
@@ -34,11 +35,12 @@ pub async fn store_publish(
         if let Some(merge_proposal_url) = merge_proposal_url {
             assert_eq!(mode, Mode::Propose);
             sqlx::query(
-                "INSERT INTO merge_proposal (url, status, revision, last_scanned,  target_branch_url, codebase) VALUES ($1, 'open', $2, NOW(), $3, $4) ON CONFLICT (url) DO UPDATE SET revision = EXCLUDED.revision, last_scanned = EXCLUDED.last_scanned, target_branch_url = EXCLUDED.target_branch_url, codebase = EXCLUDED.codebase")
+                "INSERT INTO merge_proposal (url, status, revision, last_scanned,  target_branch_url, codebase, rate_limit_bucket) VALUES ($1, 'open', $2, NOW(), $3, $4, $5) ON CONFLICT (url) DO UPDATE SET revision = EXCLUDED.revision, last_scanned = EXCLUDED.last_scanned, target_branch_url = EXCLUDED.target_branch_url, codebase = EXCLUDED.codebase, rate_limit_bucket = COALESCE(EXCLUDED.rate_limit_bucket, merge_proposal.rate_limit_bucket)")
             .bind(merge_proposal_url.to_string())
             .bind(revision.map(|r| r.to_string()))
             .bind(target_branch_url.map(|u| u.to_string()))
             .bind(codebase)
+            .bind(rate_limit_bucket)
             .execute(&mut *tx)
             .await?;
         } else {
@@ -914,5 +916,54 @@ mod tests {
         assert!(q
             .candidates
             .contains(&"https://example.com/foo/bar".to_string()));
+    }
+
+    janitor::test_with_database! {
+        schema = Core;
+        async fn test_store_publish_proposal_rate_limit_bucket(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            for query in [
+                "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git')",
+                "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            let change_set = ChangeSetId::new("cs-1").unwrap();
+            let codebase = CodebaseName::new("cb-1").unwrap();
+            let mp_url: Url = "https://example.invalid/cb-1/pull/1".parse().unwrap();
+            let revision = RevisionId::from(b"rev-1".to_vec());
+            for (publish_id, bucket) in [("pub-1", Some("b1")), ("pub-2", None)] {
+                store_publish(
+                    pool,
+                    &change_set,
+                    &codebase,
+                    Some("main"),
+                    None,
+                    None,
+                    None,
+                    Some(&revision),
+                    "main",
+                    Mode::Propose,
+                    "success",
+                    None,
+                    Some(&mp_url),
+                    Some(&PublishId::new(publish_id).unwrap()),
+                    None,
+                    None,
+                    bucket,
+                )
+                .await
+                .unwrap();
+                let stored: Option<String> = sqlx::query_scalar(
+                    "SELECT rate_limit_bucket FROM merge_proposal WHERE url = $1",
+                )
+                .bind(mp_url.as_str())
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                assert_eq!(stored.as_deref(), Some("b1"));
+            }
+        }
     }
 }
