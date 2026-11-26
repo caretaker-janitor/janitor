@@ -2354,7 +2354,7 @@ struct RunDetails {
 /// Each top-level key in the response is a Blocker with a `result`
 /// boolean and a `details` object explaining the value:
 ///
-///   * success: result_code = 'success'
+///   * success: result_code = 'success', or the run is approved
 ///   * inactive: codebase isn't marked inactive
 ///   * command: candidate.command matches run.command
 ///   * publish_status: publish_status == 'approved' (with the set
@@ -2481,7 +2481,7 @@ WHERE run.id = $1
         };
 
     let success = Blocker {
-        result: run.result_code == "success",
+        result: run.result_code == "success" || run.publish_status == "approved",
         details: BlockerSuccessDetails {
             result_code: run.result_code,
         },

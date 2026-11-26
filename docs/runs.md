@@ -57,7 +57,7 @@ A run ends in one of these ways, and its result code says which:
 - any other code: the run failed, and the code says why, such as
   `command-failed` when the codemod exits with an error.
 
-Only a successful run can be reviewed and published. Otherwise, the
+Only a successful run can be reviewed. Otherwise, the
 candidate still goes back in the queue, but the runner estimates its chance
 of success from its earlier runs, so a candidate that keeps failing or
 finding nothing to do comes up later. Some failures, such as a failed DNS
@@ -78,6 +78,9 @@ on the `/cupboard/review` page.
 
 Once a run is approved, the publisher pushes the change or opens a merge
 proposal, as the candidate's publish policy says.
+A failed run is published too once its publish status is set to
+`approved` through the runner's `POST /runs/{id}`, from the branches it
+pushed before it failed.
 With a `build-only` or `skip` publish mode, or with no
 policy, the run is not published. If a merge proposal later has a merge
 conflict, the publisher triggers a rerun of the candidate.

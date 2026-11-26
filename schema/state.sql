@@ -635,7 +635,7 @@ INNER JOIN named_publish_policy ON
     candidate.publish_policy = named_publish_policy.name
 INNER JOIN change_set ON change_set.id = run.change_set
 WHERE
-  result_code = 'success')
+  result_code = 'success' OR run.publish_status = 'approved')
 SELECT * FROM publishable WHERE ARRAY_LENGTH(unpublished_branches, 1) > 0;
 
 CREATE TABLE IF NOT EXISTS review (

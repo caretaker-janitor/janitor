@@ -703,9 +703,8 @@ pub async fn iter_publish_ready(
     // those as `DateTime<Utc>`.
     // Two type adapters needed to keep `janitor::state::Run::FromRow`
     // happy against `publish_ready`:
-    // 1. `failure_details` is dropped from the view (a publishable
-    //    run is by definition successful, so it'd always be NULL) -
-    //    sub in an explicit NULL::json.
+    // 1. `failure_details` is dropped from the view - sub in an
+    //    explicit NULL::json.
     // 2. `result_branches` is `result_branch[]` (a typed Postgres
     //    composite array) in the view, but `Run` decodes it as
     //    `RECORD[]`. Rebuild the RECORD[] form via

@@ -1452,3 +1452,60 @@ test_with_database! {
         assert_eq!(branches[0].publish_mode.as_deref(), Some("propose"));
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn publish_ready_includes_approved_failed_runs(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy)
+                 VALUES ('policy', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO codebase (name, branch_url, url, vcs_type) VALUES
+                 ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git'),
+                 ('cb-2', 'https://example.invalid/cb-2', 'https://example.invalid/cb-2', 'git');
+             INSERT INTO change_set (id, campaign, state) VALUES
+                 ('cs-1', 'lintian-fixes', 'ready'),
+                 ('cs-2', 'lintian-fixes', 'ready');
+             INSERT INTO candidate (campaign, command, publish_policy, codebase, value) VALUES
+                 ('lintian-fixes', 'noop', 'policy', 'cb-1', 100),
+                 ('lintian-fixes', 'noop', 'policy', 'cb-2', 100);
+             INSERT INTO run (
+                 id, codebase, campaign, command, start_time, finish_time, result_code, branch_url,
+                 main_branch_revision, revision, change_set, logfilenames, vcs_type, publish_status
+             ) VALUES
+                 ('run-1', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'build-failed',
+                  'https://example.invalid/cb-1', 'rev-base', 'rev-tip-1', 'cs-1', ARRAY[]::text[],
+                  'git', 'approved'),
+                 ('run-2', 'cb-2', 'lintian-fixes', 'noop', NOW(), NOW(), 'build-failed',
+                  'https://example.invalid/cb-2', 'rev-base', 'rev-tip-2', 'cs-2', ARRAY[]::text[],
+                  'git', 'unknown');
+             INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision) VALUES
+                 ('run-1', 'main', 'main', 'rev-base', 'rev-tip-1'),
+                 ('run-2', 'main', 'main', 'rev-base', 'rev-tip-2');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let ready = janitor_publish::state::iter_publish_ready(pool, None)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = ready.iter().map(|(run, _, _, _)| run.id.as_str()).collect();
+        assert_eq!(ids, vec!["run-1"]);
+
+        let app = build_app(pool.clone()).await;
+        let mut successes = vec![];
+        for run_id in ["run-1", "run-2"] {
+            let (status, body) = get_blockers(app.clone(), run_id).await;
+            assert_eq!(status, StatusCode::OK);
+            successes.push(body["success"].clone());
+        }
+        assert_eq!(
+            successes,
+            vec![
+                serde_json::json!({"result": true, "details": {"result_code": "build-failed"}}),
+                serde_json::json!({"result": false, "details": {"result_code": "build-failed"}}),
+            ]
+        );
+    }
+}
