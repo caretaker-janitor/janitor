@@ -1,5 +1,5 @@
 {% macro include_console_log(f, include_lines=None, highlight_lines=None, id=None) %}
-    {% set lines = read_file(f) %}
+    {% set lines = ansi_to_html(read_file(f)) %}
     <div class="highlight-console notranslate">
         <table class="highlighttable">
             <tr>
@@ -12,7 +12,7 @@
                 <td class="code">
                     <div class="highlight">
                         <pre {% if id %} id="{{ id }}"{% endif %}>
-{% for i, line in enumerate(lines, 1) %}{% if in_line_boundaries(i, include_lines) %}<span class="go{{ ' hll' if highlight_lines and i in highlight_lines else '' }}">{{ line.rstrip('\n') }}
+{% for i, line in enumerate(lines, 1) %}{% if in_line_boundaries(i, include_lines) %}<span class="go{{ ' hll' if highlight_lines and i in highlight_lines else '' }}">{{ line }}
 </span>{% endif %}{% endfor %}</pre>
                     </div>
                 </td>

@@ -25,6 +25,8 @@ from yarl import URL
 from janitor import utcnow
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
+from .ansi import ansi_to_html
+
 BUG_ERROR_RESULT_CODES = [
     "worker-failure",
     "worker-exception",
@@ -335,6 +337,7 @@ def worker_link_is_global(url):
 
 
 TEMPLATE_ENV = {
+    "ansi_to_html": ansi_to_html,
     "utcnow": utcnow,
     "enumerate": enumerate,
     "format_duration": format_duration,

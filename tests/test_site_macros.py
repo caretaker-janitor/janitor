@@ -20,6 +20,7 @@ from jinja2 import Environment, select_autoescape
 
 from janitor.config import read_string
 from janitor.site import template_loader
+from janitor.site.ansi import ansi_to_html
 from janitor.site.pkg import in_line_boundaries
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
@@ -118,8 +119,9 @@ def test_include_console_log():
     )
     soup = BeautifulSoup(
         env.from_string(src).render(
-            f=["one\n", "two\n", "three\n", "four\n", "five\n"],
+            f=["one\n", "\x1b[31mtwo\x1b[0m\n", "three <&>\n", "four\n", "five\n"],
             read_file=list,
+            ansi_to_html=ansi_to_html,
             enumerate=enumerate,
             in_line_boundaries=in_line_boundaries,
         ),
@@ -128,8 +130,8 @@ def test_include_console_log():
     log = soup.find("pre", id="log")
     assert log is not None
     assert log.decode_contents() == (
-        '\n<span class="go">two\n</span>'
-        '<span class="go hll">three\n</span>'
+        '\n<span class="go"><span style="color: #cd0000">two</span>\n</span>'
+        '<span class="go hll">three &lt;&amp;&gt;\n</span>'
         '<span class="go">four\n</span>'
     )
 

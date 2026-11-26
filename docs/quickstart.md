@@ -136,7 +136,8 @@ The run's page is the codebase name and the run's `id` under
 `/cupboard/c/`, for example
 `/cupboard/c/my-project/571371fa-3b7b-45e3-84d2-8201b3bfe8ff/`. Open it in
 a browser to see the run's [result](runs.md#how-a-run-ends), its logs and, if there is one, its
-diff. Each log file is also served on its own, for example `worker.log`:
+diff. Terminal colour codes in the logs show as colours there.
+Each log file is also served on its own, as it is, for example `worker.log`:
 
 ```console
 $ curl http://localhost:8090/cupboard/c/my-project/$RUN_ID/worker.log
